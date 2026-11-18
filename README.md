@@ -1,86 +1,92 @@
-## Table of Contents
+# Deploying an LLM App: From Console Script to Containerized API on AWS
 
-- [Introduction](#introduction)
-- [Learning Outcomes](#learning-outcomes)
-- [Project Structure](#project-structure)
-- [Tasks](#tasks)
-  - [Task One — API Endpoint](tasks/task_1.md)
-  - [Task Two — Refactor to Cloud Services](tasks/task_2.md)
-  - [Task Three — Production-ready Docker Image](tasks/task_3.md)
-  - [Task Four — Deployment to AWS](tasks/task_4.md)
-- [Deliverables](#deliverables)
-- [Useful Resources](#useful-resources)
-- [Contributing](#contributing)
-- [The Flow](#the-flow)
+> Built on the [Hyperskill starter project](https://github.com/hyperskill-content/AI-Engineer-Deploy) as part of the **AI Engineer Intensive Bootcamp (2026)**.
+> Part 3 of the series, following [LLM-evals](https://github.com/DMLearn/LLM-evals) and [llm-evals-2-preparing-for-prod](https://github.com/DMLearn/llm-evals-2-preparing-for-prod). The task structure was provided; the API, infrastructure migration, container build and deployment are my implementation.
 
-## **Introduction**
+The production-hardened smartphone chatbot from part 2 (RAG, guardrails, Redis memory, prompt management) turned into a **stateless REST service**, moved to **managed cloud infrastructure**, packaged as a **hardened multi-stage Docker image** and **deployed to AWS EC2**.
 
-There are various ways of deploying LLM applications depending on your needs: for pre-trained models, hosted APIs (e.g., OpenAI) offer instant setup and minimal infrastructure. If you are deploying your own fine-tuned models, you would need a GPU-powered server (either cloud-based or local) to serve your inference endpoints.
+---
 
-As you know, frameworks like LangChain help you orchestrate your LLM applications, and others like FastAPI let you expose clean, RESTful API endpoints. Typically, you package your code in a Docker image and use Kubernetes or a serverless platform (like AWS Lambda) to run it, enabling automatic scaling with demand. In this task, this is what you will work on.
+## What I implemented
 
-You already have an LLM app that is prepared for production. You did monitoring, evaluation, refined your prompts, cost management, and even added guardrails. Now, you will add an API endpoint, containerize the app, and deploy it to AWS. This way, your app will be ready for everyone else to use.
+- **REST API with FastAPI** – `POST /ask` (user input, user ID, session ID → response) and `GET /health`. The interactive console loop was refactored into a request/response flow with session state kept in Redis, so the service itself stays stateless.
+- **Migration to managed services** – local Docker dependencies replaced by cloud services: Qdrant Cloud (vector store), managed Redis (chat history), Langfuse Cloud (tracing and prompt management). All connections configured via environment variables.
+- **Multi-stage Docker build**
+  - builder stage compiles dependencies into a virtual environment, runtime stage contains only what is needed to run
+  - runs as **non-root user**
+  - built-in **health check** against `/health`
+  - served by **Gunicorn with Uvicorn workers** (2 workers, preloaded app)
+  - secrets kept out of the image and the repo via `.dockerignore` / `.gitignore`
+- **Deployment to AWS EC2** – container running on an EC2 instance, reachable via HTTP.
+- **Pinned dependencies** – exact versions in `requirements.txt` for reproducible builds.
+- **API test scenarios** – [`tests.http`](tests.http) covers valid requests, inputs that must be blocked by the guardrails (returns, order tracking, off-topic) and a multi-turn conversation that checks session memory.
 
-## **Learning Outcomes**
+## Architecture
 
-We cover deploying LLM applications in a production-ready environment. You'll use tools and services like FastAPI for creating REST API endpoints, Docker for containerization, SaaS providers for various services, and AWS Cloud to ship and share what you've been building.
-
-## **Project Structure**
-
-Here are the main directories and files in this repo:
-
-```markdown
-├── images
-│   ├── AWS.png
-│   ├── langfuse.png
-│   ├── litellm.png
-│   ├── qdrant.png
-│   ├── redis.png
-│   └── UI.png
-├── starter_code
-│   ├── config
-│   │   ├── config.yml
-│   │   └── prompts.yml
-│   ├── main.py
-│   ├── requirements.txt
-│   └── smartphones.json
-├── tasks
-│   ├── task_1.md
-│   ├── task_2.md
-│   ├── task_3.md
-│   └── task_4.md
-├── CONTRIBUTING.md
-└── README.md
+```
+Client ──HTTP──► AWS EC2
+                  └─ Docker container (non-root, health check)
+                       └─ Gunicorn + Uvicorn workers
+                            └─ FastAPI  POST /ask · GET /health
+                                 │
+                                 ├─ NeMo Guardrails (input rail)
+                                 ├─ LangChain chains + tool calling
+                                 │
+                                 ├──► Qdrant Cloud       (product vector search)
+                                 ├──► Managed Redis      (session history, TTL)
+                                 ├──► Langfuse Cloud     (tracing, prompt versions)
+                                 └──► OpenAI API         (LLM + embeddings)
 ```
 
-## **Tasks**
+## Tech stack
 
-The project is divided into various tasks that you need to complete. The tasks are located in the tasks folder of the repository. Each task includes all the necessary objectives, suggested development steps, deliverables, and useful resources. Here's a brief overview of each task:
+Python · FastAPI · Gunicorn/Uvicorn · Docker (multi-stage) · AWS EC2 · LangChain · NeMo Guardrails · Qdrant Cloud · Redis · Langfuse Cloud · OpenAI API
 
-- **Task One — API Endpoint:** Create a REST API endpoint with FastAPI that handles `POST` requests and returns a response from the LLM.
-- **Task Two — Refactor to Cloud Services**: Use SaaS providers for your vector store, Redis, and Langfuse, instead of self-hosting them.
-- **Task Three  — Production-ready Docker Image**: Containerize the FastAPI application using Docker to ensure it runs consistently across different environments.
-- **Task Four — Deployment to AWS**: Deploy the application to AWS using AWS EC2 Instances.
+## Run it
 
-This porject starts from a solution stored in the `/starter_code` directory. The tasks of this project should be completed based on the provided code.
-## **Useful Resources**
+```bash
+# Environment (.env)
+OPENAI_MODEL=...            OPENAI_BASE_URL=...      OPENAI_API_KEY=...
+LANGFUSE_PUBLIC_KEY=...     LANGFUSE_SECRET_KEY=...  LANGFUSE_HOST=...
+QDRANT_URL=...              QDRANT_API_KEY=...
+REDIS_CONN_STRING=...
 
-Each task contains a collection of resources that will be helpful for you as you solve the task. There are links to topics in Hyperskill, documentation, and other helpful tutorials that you can use. You may not always need to use all the provided resources if you're already familiar with the concepts. In addition to the provided resources, you can always discuss with your teammates and experts. You can use various channels — GitHub Issues, GitHub Discussions, PRs, or Discord.
+# Local
+pip install -r requirements.txt
+uvicorn main:app --port 8000
 
-## **Deliverables**
+# Docker
+docker build -t smartphone-assistant .
+docker run --env-file .env -p 8000:8000 smartphone-assistant
+```
 
-Each task contains a set of deliverables that bring you close to achieving the final goal. The final product is an LLM application that is accessible from anywhere. Additionally, a Docker image for your application in a public container registry of your choice (you can still delete it afterward). Add the link to the image in the About section of the repo found on the right side of the repo page. 
+Then run the scenarios in `tests.http` (JetBrains / VS Code HTTP client) or:
 
-## **Contributing**
+```bash
+curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
+  -d '{"user_input": "Compare the Samsung Galaxy S24 with the Google Pixel 8.", "user_id": "u1", "session_id": "s1"}'
+```
 
-All discussions and bug reports must be done via GitHub Issues, while code review is done via GitHub Pull Requests. For more information, see the [CONTRIBUTING.md](CONTRIBUTING.md) file.
+## Known limitations & next steps
 
-## **The Flow**
-Fork → Clone → Branch → Implement → PR → Review
+This is a learning deployment, not a hardened production service. Before real users, I would add:
 
-* Fork this repo to your own GitHub account
-* Create a new branch for each task (e.g., task-1) if applicable (if there is any code that has to be implemented)
-* Implement the solution based on the markdown descriptions
-* Push the branch to the forked repo
-* Create a Pull Request from the fork back to the main repo
-* We will review the PR and provide feedback through GitHub
+- **Authentication and rate limiting** on `/ask` – currently any client can trigger paid LLM calls
+- **HTTPS** via a reverse proxy or load balancer
+- **CI/CD** – build, test and push the image automatically (e.g. GitHub Actions → Amazon ECR)
+- **Automated tests** – turn the `tests.http` scenarios into a pytest suite that runs in the pipeline
+- **Build chains once at startup** instead of on every request
+
+---
+
+<details>
+<summary>Original task description (Hyperskill)</summary>
+
+The project is structured into four tasks, see the [tasks](./tasks) folder:
+
+1. **Create an API endpoint** for the LLM application
+2. **Migrate to managed services** (vector store, Redis, Langfuse)
+3. **Containerize** the application with Docker
+4. **Deploy** to AWS EC2
+
+</details>
